@@ -7,6 +7,8 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from db import init_db, upsert_user, add_task, get_tasks, mark_done, get_task_by_id
+from ai import split_task, generate_encouragement
+from db import get_tone
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -136,14 +138,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_id = int(data.split("_")[1])
         task = await get_task_by_id(task_id)
         await mark_done(task_id, tid)
-        await query.edit_message_text(f"✅ Выполнено: {task[1]}\n\nМолодец, так держать!")
+
+        # Подбадривание через ИИ
+        tone = await get_tone(tid)
+        preset = tone[0] if tone else "motivational"
+        custom = tone[1] if tone else None
+        encouragement = await generate_encouragement(task[1], preset, custom)
+
+        await query.edit_message_text(f"✅ Выполнено: {task[1]}\n\n{encouragement}")
 
     elif data.startswith("split_"):
         task_id = int(data.split("_")[1])
-        await query.edit_message_text(
-            f"🤖 Разбиваю задачу #{task_id} на подзадачи...\n"
-            f"Используй команду: /split {task_id}"
-        )
+        task = await get_task_by_id(task_id)
+
+        # Игнорируем если сообщение уже изменено
+        try:
+            await query.edit_message_text(f"🤖 Думаю над задачей «{task[1]}»...")
+        except Exception:
+            pass
+
+        subtasks = await split_task(task[1])
+
+        for sub in subtasks:
+            await add_task(tid, sub, parent_id=task_id)
+
+        text = f"Разбил на {len(subtasks)} подзадач:\n\n"
+        for i, sub in enumerate(subtasks, 1):
+            text += f"{i}. {sub}\n"
+        text += "\nСмотри /list чтобы увидеть их все"
+
+        await query.edit_message_text(text)
 
 # Запуск
 async def post_init(app):
