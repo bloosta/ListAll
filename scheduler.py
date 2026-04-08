@@ -22,7 +22,7 @@ async def _scheduler_loop(bot):
         await asyncio.sleep(60)
 
 async def check_reminders(bot):
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M")
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT r.id, r.user_id, r.task_id, t.title, u.telegram_id, u.tone_preset, u.tone_custom

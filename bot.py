@@ -353,7 +353,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task = await get_task_by_id(task_id)
         text = update.message.text.strip()
         try:
-            remind_at = datetime.strptime(text, "%d.%m.%Y %H:%M").isoformat()
+            remind_at = datetime.strptime(text, "%d.%m.%Y %H:%M").strftime("%Y-%m-%dT%H:%M")
             await add_reminder(task_id, tid, remind_at)
             await update.message.reply_text(
                 f"⏰ Напоминание установлено: {text}\n📌 {task[1]}"
