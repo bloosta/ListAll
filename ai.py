@@ -47,3 +47,21 @@ async def generate_encouragement(task_title: str, tone_preset: str, tone_custom:
 Только само сообщение, без лишних слов."""
 
     return await _ask_groq(prompt)
+
+async def generate_nudge(task_title: str, tone_preset: str, tone_custom: str = None) -> str:
+    if tone_custom:
+        style = tone_custom
+    elif tone_preset == "motivational":
+        style = "мотивирующий тренер"
+    elif tone_preset == "humor":
+        style = "друг с юмором, слегка подтрунивает"
+    elif tone_preset == "strict":
+        style = "строгий наставник"
+    else:
+        style = "дружелюбный помощник"
+
+    prompt = f"""Задача уже давно висит невыполненной: "{task_title}"
+Напиши короткое напоминание-подбадривание (1-2 предложения) в стиле: {style}
+Намекни что пора бы заняться этим. Только само сообщение, без лишних слов."""
+
+    return await _ask_groq(prompt)

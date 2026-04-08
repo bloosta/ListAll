@@ -11,7 +11,8 @@ async def init_db():
                 telegram_id INTEGER UNIQUE,
                 first_name TEXT,
                 tone_preset TEXT DEFAULT 'motivational',
-                tone_custom TEXT
+                tone_custom TEXT,
+                nudge_enabled INTEGER DEFAULT 1
             )
         """)
         await db.execute("""
@@ -24,7 +25,8 @@ async def init_db():
                 deadline TEXT,
                 is_done INTEGER DEFAULT 0,
                 is_split INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now')),
+                nudge_sent_at TEXT DEFAULT NULL
             )
         """)
         await db.execute("""
@@ -37,6 +39,18 @@ async def init_db():
             )
         """)
         await db.commit()
+
+        # Миграции для существующих баз
+        for col, definition in [
+            ("nudge_enabled", "INTEGER DEFAULT 1"),
+            ("nudge_sent_at", "TEXT DEFAULT NULL"),
+        ]:
+            try:
+                table = "users" if col == "nudge_enabled" else "tasks"
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+                await db.commit()
+            except Exception:
+                pass
 
 async def upsert_user(telegram_id: int, first_name: str):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -75,6 +89,28 @@ async def get_tasks(telegram_id: int):
             ORDER BY t.id
         """, (telegram_id,))
         return await cursor.fetchall()
+
+async def get_done_tasks(telegram_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT t.id, t.title, t.deadline
+            FROM tasks t
+            JOIN users u ON t.user_id = u.id
+            WHERE u.telegram_id = ? AND t.is_done = 1 AND t.parent_id IS NULL
+            ORDER BY t.id DESC
+            LIMIT 20
+        """, (telegram_id,))
+        return await cursor.fetchall()
+
+async def delete_done_task(task_id: int, telegram_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            DELETE FROM tasks WHERE id = ? AND is_done = 1
+            AND user_id = (SELECT id FROM users WHERE telegram_id = ?)
+        """, (task_id, telegram_id))
+        await db.execute("DELETE FROM tasks WHERE parent_id = ?", (task_id,))
+        await db.execute("DELETE FROM reminders WHERE task_id = ?", (task_id,))
+        await db.commit()
 
 async def get_task_by_id(task_id: int, telegram_id: int = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -165,6 +201,7 @@ async def delete_task(task_id: int, telegram_id: int):
             )
         """, (task_id, telegram_id))
         await db.execute("DELETE FROM tasks WHERE parent_id = ?", (task_id,))
+        await db.execute("DELETE FROM reminders WHERE task_id = ?", (task_id,))
         await db.commit()
 
 async def get_tone(telegram_id: int):
@@ -191,9 +228,59 @@ async def add_reminder(task_id: int, telegram_id: int, remind_at: str):
         user = await cursor.fetchone()
         if not user:
             return False
+        # Удаляем старые неотправленные напоминания для этой задачи
+        await db.execute("""
+            DELETE FROM reminders WHERE task_id = ? AND user_id = ? AND is_sent = 0
+        """, (task_id, user[0]))
         await db.execute("""
             INSERT INTO reminders (task_id, user_id, remind_at)
             VALUES (?, ?, ?)
         """, (task_id, user[0], remind_at))
         await db.commit()
         return True
+
+async def get_active_reminder(task_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT remind_at FROM reminders
+            WHERE task_id = ? AND is_sent = 0
+            ORDER BY remind_at ASC LIMIT 1
+        """, (task_id,))
+        return await cursor.fetchone()
+
+async def get_nudge_enabled(telegram_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT nudge_enabled FROM users WHERE telegram_id = ?", (telegram_id,)
+        )
+        row = await cursor.fetchone()
+        return bool(row[0]) if row else True
+
+async def set_nudge_enabled(telegram_id: int, enabled: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET nudge_enabled = ? WHERE telegram_id = ?",
+            (1 if enabled else 0, telegram_id)
+        )
+        await db.commit()
+
+async def get_stale_tasks_for_nudge(threshold_iso: str, cooldown_iso: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT t.id, t.title, u.telegram_id, u.tone_preset, u.tone_custom
+            FROM tasks t
+            JOIN users u ON t.user_id = u.id
+            WHERE t.is_done = 0
+              AND t.parent_id IS NULL
+              AND u.nudge_enabled = 1
+              AND t.created_at <= ?
+              AND (t.nudge_sent_at IS NULL OR t.nudge_sent_at <= ?)
+        """, (threshold_iso, cooldown_iso))
+        return await cursor.fetchall()
+
+async def mark_nudge_sent(task_id: int, sent_at: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE tasks SET nudge_sent_at = ? WHERE id = ?", (sent_at, task_id)
+        )
+        await db.commit()

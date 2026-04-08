@@ -1,7 +1,7 @@
 import asyncio
 import threading
-from datetime import datetime, timezone
-from db import DB_PATH
+from datetime import datetime, timezone, timedelta
+from db import DB_PATH, get_stale_tasks_for_nudge, mark_nudge_sent
 import aiosqlite
 
 def start_scheduler(bot):
@@ -14,9 +14,13 @@ def _run_loop(bot):
     loop.run_until_complete(_scheduler_loop(bot))
 
 async def _scheduler_loop(bot):
+    tick = 0
     while True:
         try:
             await check_reminders(bot)
+            if tick % 60 == 0:  # раз в час
+                await check_nudges(bot)
+            tick += 1
         except Exception as e:
             print(f"Ошибка планировщика: {e}")
         await asyncio.sleep(60)
@@ -29,7 +33,7 @@ async def check_reminders(bot):
             FROM reminders r
             JOIN tasks t ON r.task_id = t.id
             JOIN users u ON r.user_id = u.id
-            WHERE r.is_sent = 0 AND r.remind_at <= ?
+            WHERE r.is_sent = 0 AND r.remind_at <= ? AND t.is_done = 0
         """, (now,))
         rows = await cursor.fetchall()
 
@@ -47,3 +51,22 @@ async def check_reminders(bot):
                 print(f"Ошибка отправки напоминания {reminder_id}: {e}")
 
         await db.commit()
+
+async def check_nudges(bot):
+    now_utc = datetime.now(timezone.utc)
+    threshold = (now_utc - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")
+    cooldown = (now_utc - timedelta(hours=24)).isoformat()
+
+    rows = await get_stale_tasks_for_nudge(threshold, cooldown)
+    for row in rows:
+        task_id, title, telegram_id, tone_preset, tone_custom = row
+        try:
+            from ai import generate_nudge
+            nudge = await generate_nudge(title, tone_preset, tone_custom)
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=f"👀 Задача ждёт тебя:\n\n📌 {title}\n\n{nudge}"
+            )
+            await mark_nudge_sent(task_id, now_utc.isoformat())
+        except Exception as e:
+            print(f"Ошибка nudge для задачи {task_id}: {e}")

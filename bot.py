@@ -2,20 +2,19 @@ import logging
 import os
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     ContextTypes, MessageHandler, filters, ConversationHandler
 )
 from dotenv import load_dotenv
-from db import (init_db, upsert_user, add_task, get_tasks, mark_done,
-                get_task_by_id, get_subtasks, mark_subtask_done, mark_task_split,
-                clear_subtasks, update_task, delete_task,
-                add_reminder, set_tone, get_tone)
+from db import (init_db, upsert_user, add_task, get_tasks, get_done_tasks,
+                delete_done_task, mark_done, get_task_by_id, get_subtasks,
+                mark_subtask_done, mark_task_split, clear_subtasks, update_task,
+                delete_task, add_reminder, get_active_reminder, set_tone, get_tone,
+                get_nudge_enabled, set_nudge_enabled)
 from ai import split_task, generate_encouragement
-from zoneinfo import ZoneInfo
-
-
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -39,14 +38,20 @@ WAITING_TONE_CUSTOM = 10
 WAITING_REMIND_CUSTOM = 11
 WAITING_MANUAL_SUBTASK = 12
 
-
-
 def to_utc(dt_naive: datetime) -> str:
     """Переводит московское время в UTC и возвращает isoformat."""
     return dt_naive.replace(tzinfo=ZoneInfo("Europe/Moscow")) \
                    .astimezone(ZoneInfo("UTC")) \
                    .replace(tzinfo=None) \
                    .isoformat()
+
+def utc_to_moscow(iso_str: str) -> str:
+    """Переводит UTC isoformat в московское время для отображения."""
+    try:
+        dt = datetime.fromisoformat(iso_str).replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return iso_str
 
 # ─── Построитель сообщения задачи ─────────────────────────
 async def build_task_message(task_id: int):
@@ -56,8 +61,8 @@ async def build_task_message(task_id: int):
 
     tid, title, description, deadline, is_split = task
     subtasks = await get_subtasks(task_id)
+    active_reminder = await get_active_reminder(task_id)
 
-    # Текст сообщения
     text = f"📌 {title}"
     if description:
         text += f"\n📝 {description}"
@@ -65,8 +70,10 @@ async def build_task_message(task_id: int):
         try:
             dt = datetime.fromisoformat(deadline)
             text += f"\n📅 {dt.strftime('%d.%m.%Y %H:%M')}"
-        except:
+        except Exception:
             pass
+    if active_reminder:
+        text += f"\n🔔 {utc_to_moscow(active_reminder[0])}"
 
     if subtasks:
         text += "\n"
@@ -74,7 +81,6 @@ async def build_task_message(task_id: int):
             icon = "✅" if sub_done else "☐"
             text += f"\n{icon} {sub_title}"
 
-    # Кнопки подзадач (только незавершённые)
     buttons = []
     for sub_id, sub_title, sub_done in subtasks:
         if not sub_done:
@@ -83,7 +89,6 @@ async def build_task_message(task_id: int):
                 f"✅ {label}", callback_data=f"subdone_{sub_id}_{task_id}"
             )])
 
-    # Основные кнопки
     split_label = "🔄 Переразбить" if is_split else "🤖 Разбить"
     buttons.append([
         InlineKeyboardButton("✅ Выполнено", callback_data=f"done_{task_id}"),
@@ -105,7 +110,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Я твой менеджер задач:\n\n"
         f"/add — добавить задачу\n"
         f"/list — список задач\n"
-        f"/tone — настроить тон подбадривания"
+        f"/history — выполненные задачи\n"
+        f"/tone — тон подбадривания\n"
+        f"/settings — настройки\n\n"
+        f"💡 Просто напиши что угодно — и я создам задачу!"
     )
 
 # ─── /add ─────────────────────────────────────────────────
@@ -180,12 +188,65 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, keyboard = await build_task_message(task_id)
         await update.message.reply_text(text, reply_markup=keyboard)
 
+# ─── /history ─────────────────────────────────────────────
+async def history_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tid = update.effective_user.id
+    tasks = await get_done_tasks(tid)
+    if not tasks:
+        await update.message.reply_text("Выполненных задач пока нет.")
+        return
+    await update.message.reply_text(f"✅ Выполненные задачи ({len(tasks)}):")
+    for task_id, title, deadline in tasks:
+        text = f"✅ {title}"
+        if deadline:
+            try:
+                dt = datetime.fromisoformat(deadline)
+                text += f"\n📅 {dt.strftime('%d.%m.%Y %H:%M')}"
+            except Exception:
+                pass
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑 Удалить", callback_data=f"del_done_{task_id}")
+        ]])
+        await update.message.reply_text(text, reply_markup=keyboard)
+
+# ─── /settings ────────────────────────────────────────────
+async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tid = update.effective_user.id
+    nudge = await get_nudge_enabled(tid)
+    nudge_label = "🔔 Напоминалки: вкл" if nudge else "🔕 Напоминалки: выкл"
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(nudge_label, callback_data="nudge_toggle")
+    ]])
+    await update.message.reply_text(
+        "⚙️ Настройки\n\n"
+        "Автоматические напоминалки — бот пишет, если задача долго висит невыполненной.",
+        reply_markup=keyboard
+    )
+
 # ─── Главный обработчик кнопок ────────────────────────────
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     tid = update.effective_user.id
     data = query.data
+
+    # Удаление выполненной задачи из истории
+    if data.startswith("del_done_"):
+        task_id = int(data.split("_")[2])
+        await delete_done_task(task_id, tid)
+        await query.edit_message_text("🗑 Удалено")
+        return
+
+    # Переключение автонапоминалок
+    if data == "nudge_toggle":
+        current = await get_nudge_enabled(tid)
+        await set_nudge_enabled(tid, not current)
+        new_label = "🔔 Напоминалки: вкл" if not current else "🔕 Напоминалки: выкл"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(new_label, callback_data="nudge_toggle")
+        ]])
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+        return
 
     # Выполнено (главная задача)
     if data.startswith("done_"):
@@ -226,7 +287,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         if task[4]:
             await clear_subtasks(task_id, tid)
-        # Передаём описание в ИИ если есть
         context_text = task[1]
         if task[2]:
             context_text += f". Контекст: {task[2]}"
@@ -309,16 +369,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Например: 15.04.2026 09:00"
             )
             return
+        else:
+            return
 
         await add_reminder(task_id, tid, remind_at)
         await query.edit_message_text(
             f"⏰ Напоминание установлено — {label}\n📌 {task[1]}"
         )
 
-# ─── Обработчик текста (для редактирования и напоминания) ─
+# ─── Обработчик текста ────────────────────────────────────
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
-
 
     if context.user_data.get("awaiting_tone"):
         context.user_data["awaiting_tone"] = False
@@ -327,7 +388,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Тон установлен: «{custom}»")
         return
 
-    # Ожидаем ввод для редактирования
     if context.user_data.get("awaiting_edit"):
         context.user_data["awaiting_edit"] = False
         task_id = context.user_data.get("edit_task_id")
@@ -353,12 +413,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await add_task(tid, text, parent_id=task_id)
             await update.message.reply_text(f"✅ Подзадача добавлена: {text}")
 
-        # Показываем обновлённую задачу
         msg_text, keyboard = await build_task_message(task_id)
         await update.message.reply_text(msg_text, reply_markup=keyboard)
         return
 
-    # Ожидаем своё время напоминания
     if context.user_data.get("awaiting_remind"):
         context.user_data["awaiting_remind"] = False
         task_id = context.user_data.get("remind_task_id")
@@ -376,9 +434,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_remind"] = True
         return
 
-    # Ожидаем /skip для описания или дедлайна при пропуске
-    if context.user_data.get("skip_deadline"):
-        context.user_data["skip_deadline"] = False
+    # Быстрое добавление задачи
+    await upsert_user(tid, update.effective_user.first_name)
+    title = update.message.text.strip()
+    task_id = await add_task(tid, title)
+    if task_id:
+        text, keyboard = await build_task_message(task_id)
+        await update.message.reply_text(f"✅ Задача создана!\n\n{text}", reply_markup=keyboard)
 
 # ─── /tone ────────────────────────────────────────────────
 async def tone_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,24 +474,17 @@ async def tone_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Тон установлен: «{update.message.text.strip()}»")
     return ConversationHandler.END
 
-
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     import traceback
     from telegram.error import NetworkError, TimedOut
-
-    # Сетевые ошибки НЕ перехватываем — пусть падают до while True
     if isinstance(context.error, (NetworkError, TimedOut)):
         logging.warning(f"Сетевая ошибка: {context.error}")
         return
-
     logging.error("Ошибка: %s", context.error)
     logging.error(traceback.format_exc())
-
     if update and update.effective_message:
         try:
-            await update.effective_message.reply_text(
-                "⚠️ Что-то пошло не так. Попробуй ещё раз."
-            )
+            await update.effective_message.reply_text("⚠️ Что-то пошло не так. Попробуй ещё раз.")
         except Exception:
             pass
 
@@ -442,7 +497,9 @@ async def post_init(app):
         ("start", "Главная"),
         ("add", "Добавить задачу"),
         ("list", "Мои задачи"),
+        ("history", "Выполненные задачи"),
         ("tone", "Настроить тон подбадривания"),
+        ("settings", "Настройки"),
     ])
 
 if __name__ == "__main__":
@@ -490,12 +547,13 @@ if __name__ == "__main__":
         application.add_handler(tone_conv)
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("list", list_tasks))
+        application.add_handler(CommandHandler("history", history_tasks))
+        application.add_handler(CommandHandler("settings", settings))
         application.add_handler(CallbackQueryHandler(tone_button, pattern="^tone_"))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
         application.add_error_handler(error_handler)
         return application
-
 
     while True:
         try:
