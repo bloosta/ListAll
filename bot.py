@@ -488,13 +488,12 @@ if __name__ == "__main__":
     while True:
         try:
             print("Бот запущен!")
-            asyncio.run(build_app().run_polling(
+            build_app().run_polling(
                 drop_pending_updates=True,
                 allowed_updates=Update.ALL_TYPES,
-            ))
+            )
         except Exception as e:
             from telegram.error import NetworkError, TimedOut
-
             if isinstance(e, (NetworkError, TimedOut)):
                 logging.warning(f"Сетевая ошибка, перезапуск через 3 сек: {e}")
                 time.sleep(3)
