@@ -19,8 +19,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
 )
 
 # Состояния
@@ -399,13 +403,16 @@ async def tone_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     import traceback
+    from telegram.error import NetworkError, TimedOut
+
+    # Сетевые ошибки НЕ перехватываем — пусть падают до while True
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        logging.warning(f"Сетевая ошибка: {context.error}")
+        return
+
     logging.error("Ошибка: %s", context.error)
     logging.error(traceback.format_exc())
-    # Если это сетевая ошибка — просто игнорируем, бот сам восстановится
-    from telegram.error import NetworkError, TimedOut
-    if isinstance(context.error, (NetworkError, TimedOut)):
-        return
-    # Для остальных ошибок пробуем уведомить пользователя
+
     if update and update.effective_message:
         try:
             await update.effective_message.reply_text(
@@ -427,43 +434,70 @@ async def post_init(app):
     ])
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    import time
 
-    add_conv = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
-        states={
-            WAITING_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_title)],
-            WAITING_DESCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_description),
-                CommandHandler("skip", add_skip_description)
-            ],
-            WAITING_DEADLINE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_deadline),
-                CommandHandler("skip", add_skip_deadline)
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    )
+    def build_app():
+        application = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .post_init(post_init)
+            .connect_timeout(30)
+            .read_timeout(30)
+            .write_timeout(30)
+            .build()
+        )
 
-    tone_conv = ConversationHandler(
-        entry_points=[CommandHandler("tone", tone_start)],
-        states={
-            WAITING_TONE_CUSTOM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, tone_custom_input),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False
-    )
+        add_conv = ConversationHandler(
+            entry_points=[CommandHandler("add", add_start)],
+            states={
+                WAITING_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_title)],
+                WAITING_DESCRIPTION: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_description),
+                    CommandHandler("skip", add_skip_description)
+                ],
+                WAITING_DEADLINE: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_deadline),
+                    CommandHandler("skip", add_skip_deadline)
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)]
+        )
 
-    app.add_handler(add_conv)
-    app.add_handler(tone_conv)
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("list", list_tasks))
-    app.add_handler(CallbackQueryHandler(tone_button, pattern="^tone_"))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.add_error_handler(error_handler)
+        tone_conv = ConversationHandler(
+            entry_points=[CommandHandler("tone", tone_start)],
+            states={
+                WAITING_TONE_CUSTOM: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, tone_custom_input),
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_message=False
+        )
 
-    print("Бот запущен!")
-    app.run_polling(drop_pending_updates=True)
+        application.add_handler(add_conv)
+        application.add_handler(tone_conv)
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("list", list_tasks))
+        application.add_handler(CallbackQueryHandler(tone_button, pattern="^tone_"))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+        application.add_error_handler(error_handler)
+        return application
+
+
+    while True:
+        try:
+            print("Бот запущен!")
+            asyncio.run(build_app().run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+            ))
+        except Exception as e:
+            from telegram.error import NetworkError, TimedOut
+
+            if isinstance(e, (NetworkError, TimedOut)):
+                logging.warning(f"Сетевая ошибка, перезапуск через 3 сек: {e}")
+                time.sleep(3)
+            else:
+                logging.error(f"Бот упал: {e}. Перезапуск через 5 секунд...")
+                time.sleep(5)
