@@ -13,7 +13,6 @@ from db import (init_db, upsert_user, add_task, get_tasks, mark_done,
                 clear_subtasks, update_task, delete_task,
                 add_reminder, set_tone, get_tone)
 from ai import split_task, generate_encouragement
-from scheduler import run_scheduler
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -424,8 +423,8 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Запуск ───────────────────────────────────────────────
 async def post_init(app):
     await init_db()
-    asyncio.create_task(run_scheduler(app.bot))
-    # Меню команд в интерфейсе Telegram
+    from scheduler import start_scheduler
+    start_scheduler(app.bot)
     await app.bot.set_my_commands([
         ("start", "Главная"),
         ("add", "Добавить задачу"),
