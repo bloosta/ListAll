@@ -13,6 +13,9 @@ from db import (init_db, upsert_user, add_task, get_tasks, mark_done,
                 clear_subtasks, update_task, delete_task,
                 add_reminder, set_tone, get_tone)
 from ai import split_task, generate_encouragement
+from zoneinfo import ZoneInfo
+
+
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -35,6 +38,15 @@ EDIT_VALUE = 4
 WAITING_TONE_CUSTOM = 10
 WAITING_REMIND_CUSTOM = 11
 WAITING_MANUAL_SUBTASK = 12
+
+
+
+def to_utc(dt_naive: datetime) -> str:
+    """Переводит московское время в UTC и возвращает isoformat."""
+    return dt_naive.replace(tzinfo=ZoneInfo("Europe/Moscow")) \
+                   .astimezone(ZoneInfo("UTC")) \
+                   .replace(tzinfo=None) \
+                   .isoformat()
 
 # ─── Построитель сообщения задачи ─────────────────────────
 async def build_task_message(task_id: int):
@@ -278,16 +290,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rtype = parts[1]
         task_id = int(parts[2])
         task = await get_task_by_id(task_id)
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Europe/Moscow")).replace(tzinfo=None)
 
         if rtype == "1h":
-            remind_at = (now + timedelta(hours=1)).isoformat()
+            remind_at = to_utc(now + timedelta(hours=1))
             label = "через час"
         elif rtype == "eve":
-            remind_at = now.replace(hour=20, minute=0, second=0).isoformat()
+            remind_at = to_utc(now.replace(hour=20, minute=0, second=0, microsecond=0))
             label = "сегодня в 20:00"
         elif rtype == "tom":
-            remind_at = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0).isoformat()
+            remind_at = to_utc((now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0))
             label = "завтра в 09:00"
         elif rtype == "cust":
             context.user_data["remind_task_id"] = task_id
@@ -353,7 +365,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task = await get_task_by_id(task_id)
         text = update.message.text.strip()
         try:
-            remind_at = datetime.strptime(text, "%d.%m.%Y %H:%M").strftime("%Y-%m-%dT%H:%M")
+            dt_moscow = datetime.strptime(text, "%d.%m.%Y %H:%M")
+            remind_at = to_utc(dt_moscow)
             await add_reminder(task_id, tid, remind_at)
             await update.message.reply_text(
                 f"⏰ Напоминание установлено: {text}\n📌 {task[1]}"
