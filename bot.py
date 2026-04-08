@@ -175,7 +175,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Выполнено (главная задача)
     if data.startswith("done_"):
         task_id = int(data.split("_")[1])
-        task = await get_task_by_id(task_id)
+        task = await get_task_by_id(task_id, tid)
+        if not task:
+            await query.answer("Задача не найдена", show_alert=True)
+            return
         await mark_done(task_id, tid)
         tone = await get_tone(tid)
         preset = tone[0] if tone else "motivational"
@@ -188,7 +191,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         subtask_id = int(parts[1])
         task_id = int(parts[2])
-        await mark_subtask_done(subtask_id)
+        await mark_subtask_done(subtask_id, tid)
         text, keyboard = await build_task_message(task_id)
         try:
             await query.edit_message_text(text, reply_markup=keyboard)
@@ -198,13 +201,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Разбить / Переразбить
     elif data.startswith("split_"):
         task_id = int(data.split("_")[1])
-        task = await get_task_by_id(task_id)
+        task = await get_task_by_id(task_id, tid)
+        if not task:
+            await query.answer("Задача не найдена", show_alert=True)
+            return
         try:
             await query.edit_message_text(f"🤖 Думаю над задачей «{task[1]}»...")
         except Exception:
             pass
-        if task[4]:  # is_split — переразбивка
-            await clear_subtasks(task_id)
+        if task[4]:
+            await clear_subtasks(task_id, tid)
         # Передаём описание в ИИ если есть
         context_text = task[1]
         if task[2]:
@@ -212,13 +218,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subtasks = await split_task(context_text)
         for sub in subtasks:
             await add_task(tid, sub, parent_id=task_id)
-        await mark_task_split(task_id)
+        await mark_task_split(task_id, tid)
         text, keyboard = await build_task_message(task_id)
         await query.edit_message_text(text, reply_markup=keyboard)
 
     # Меню редактирования
     elif data.startswith("editmenu_"):
         task_id = int(data.split("_")[1])
+        task = await get_task_by_id(task_id, tid)
+        if not task:
+            await query.answer("Нет доступа", show_alert=True)
+            return
         context.user_data["edit_task_id"] = task_id
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Название", callback_data="editf_title"),
@@ -386,10 +396,35 @@ async def tone_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Тон установлен: «{update.message.text.strip()}»")
     return ConversationHandler.END
 
+
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    import traceback
+    logging.error("Ошибка: %s", context.error)
+    logging.error(traceback.format_exc())
+    # Если это сетевая ошибка — просто игнорируем, бот сам восстановится
+    from telegram.error import NetworkError, TimedOut
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        return
+    # Для остальных ошибок пробуем уведомить пользователя
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Что-то пошло не так. Попробуй ещё раз."
+            )
+        except Exception:
+            pass
+
 # ─── Запуск ───────────────────────────────────────────────
 async def post_init(app):
     await init_db()
     asyncio.create_task(run_scheduler(app.bot))
+    # Меню команд в интерфейсе Telegram
+    await app.bot.set_my_commands([
+        ("start", "Главная"),
+        ("add", "Добавить задачу"),
+        ("list", "Мои задачи"),
+        ("tone", "Настроить тон подбадривания"),
+    ])
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
@@ -428,6 +463,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(tone_button, pattern="^tone_"))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_error_handler(error_handler)
 
     print("Бот запущен!")
     app.run_polling(drop_pending_updates=True)

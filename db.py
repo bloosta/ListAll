@@ -76,12 +76,20 @@ async def get_tasks(telegram_id: int):
         """, (telegram_id,))
         return await cursor.fetchall()
 
-async def get_task_by_id(task_id: int):
+async def get_task_by_id(task_id: int, telegram_id: int = None):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT id, title, description, deadline, is_split FROM tasks WHERE id = ?",
-            (task_id,)
-        )
+        if telegram_id:
+            cursor = await db.execute("""
+                SELECT t.id, t.title, t.description, t.deadline, t.is_split
+                FROM tasks t
+                JOIN users u ON t.user_id = u.id
+                WHERE t.id = ? AND u.telegram_id = ?
+            """, (task_id, telegram_id))
+        else:
+            cursor = await db.execute(
+                "SELECT id, title, description, deadline, is_split FROM tasks WHERE id = ?",
+                (task_id,)
+            )
         return await cursor.fetchone()
 
 async def get_subtasks(task_id: int):
@@ -101,20 +109,33 @@ async def mark_done(task_id: int, telegram_id: int):
         await db.execute("UPDATE tasks SET is_done = 1 WHERE parent_id = ?", (task_id,))
         await db.commit()
 
-async def mark_subtask_done(subtask_id: int):
+async def mark_subtask_done(subtask_id: int, telegram_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE tasks SET is_done = 1 WHERE id = ?", (subtask_id,))
+        await db.execute("""
+            UPDATE tasks SET is_done = 1 WHERE id = ?
+            AND user_id = (SELECT id FROM users WHERE telegram_id = ?)
+        """, (subtask_id, telegram_id))
         await db.commit()
 
-async def mark_task_split(task_id: int):
+async def mark_task_split(task_id: int, telegram_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE tasks SET is_split = 1 WHERE id = ?", (task_id,))
+        await db.execute("""
+            UPDATE tasks SET is_split = 1 WHERE id = ?
+            AND user_id = (SELECT id FROM users WHERE telegram_id = ?)
+        """, (task_id, telegram_id))
         await db.commit()
 
-async def clear_subtasks(task_id: int):
+async def clear_subtasks(task_id: int, telegram_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM tasks WHERE parent_id = ?", (task_id,))
-        await db.execute("UPDATE tasks SET is_split = 0 WHERE id = ?", (task_id,))
+        await db.execute("""
+            DELETE FROM tasks WHERE parent_id = ?
+            AND (SELECT user_id FROM tasks WHERE id = ?) =
+                (SELECT id FROM users WHERE telegram_id = ?)
+        """, (task_id, task_id, telegram_id))
+        await db.execute("""
+            UPDATE tasks SET is_split = 0 WHERE id = ?
+            AND user_id = (SELECT id FROM users WHERE telegram_id = ?)
+        """, (task_id, telegram_id))
         await db.commit()
 
 async def update_task(task_id: int, telegram_id: int, title: str = None,

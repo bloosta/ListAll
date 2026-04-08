@@ -32,5 +32,8 @@ async def check_reminders(bot):
 
 async def run_scheduler(bot):
     while True:
-        await check_reminders(bot)
-        await asyncio.sleep(60)  # проверяем каждую минуту
+        try:
+            await check_reminders(bot)
+        except Exception as e:
+            print(f"Ошибка планировщика: {e}")
+        await asyncio.sleep(60)
