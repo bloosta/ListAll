@@ -294,6 +294,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
 
+
+    if context.user_data.get("awaiting_tone"):
+        context.user_data["awaiting_tone"] = False
+        custom = update.message.text.strip()
+        await set_tone(tid, preset="custom", custom=custom)
+        await update.message.reply_text(f"Тон установлен: «{custom}»")
+        return
+
     # Ожидаем ввод для редактирования
     if context.user_data.get("awaiting_edit"):
         context.user_data["awaiting_edit"] = False
@@ -365,6 +373,7 @@ async def tone_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "tone_custom":
         await query.edit_message_text("Напиши свой стиль:\n\nНапример: «будь как Шрек — грубо но по-доброму»")
+        context.user_data["awaiting_tone"] = True
         return WAITING_TONE_CUSTOM
     preset = data.replace("tone_", "")
     await set_tone(tid, preset=preset, custom=None)
