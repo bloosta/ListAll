@@ -1,7 +1,7 @@
 import aiosqlite
 import os
 
-DB_PATH = "tasks.db"
+DB_PATH = "/app/data/tasks.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
