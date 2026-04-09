@@ -54,8 +54,8 @@ async def check_reminders(bot):
 
 async def check_nudges(bot):
     now_utc = datetime.now(timezone.utc)
-    threshold = (now_utc - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")
-    cooldown = (now_utc - timedelta(hours=24)).isoformat()
+    threshold = (now_utc - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
+    cooldown = (now_utc - timedelta(hours=6)).isoformat()
 
     rows = await get_stale_tasks_for_nudge(threshold, cooldown)
     for row in rows:

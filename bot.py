@@ -460,7 +460,7 @@ async def tone_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
     data = query.data
     if data == "tone_custom":
-        await query.edit_message_text("Напиши свой стиль:\n\nНапример: «будь как Шрек — грубо но по-доброму»")
+        await query.edit_message_text("Напиши свой стиль:\n\nНапример: «Шрек — грубый, но добрый»")
         context.user_data["awaiting_tone"] = True
         return WAITING_TONE_CUSTOM
     preset = data.replace("tone_", "")
