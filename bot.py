@@ -15,6 +15,7 @@ from db import (init_db, upsert_user, add_task, get_tasks, get_done_tasks,
                 delete_task, add_reminder, get_active_reminder, set_tone, get_tone,
                 get_nudge_enabled, set_nudge_enabled)
 from ai import split_task, generate_encouragement
+from admin import start_admin
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -556,8 +557,13 @@ if __name__ == "__main__":
         application.add_error_handler(error_handler)
         return application
 
+
     while True:
         try:
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             print("Бот запущен!")
             build_app().run_polling(
                 drop_pending_updates=True,
@@ -565,6 +571,7 @@ if __name__ == "__main__":
             )
         except Exception as e:
             from telegram.error import NetworkError, TimedOut
+
             if isinstance(e, (NetworkError, TimedOut)):
                 logging.warning(f"Сетевая ошибка, перезапуск через 3 сек: {e}")
                 time.sleep(3)
