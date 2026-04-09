@@ -493,6 +493,7 @@ async def post_init(app):
     await init_db()
     from scheduler import start_scheduler
     start_scheduler(app.bot)
+    start_admin()
     await app.bot.set_my_commands([
         ("start", "Главная"),
         ("add", "Добавить задачу"),

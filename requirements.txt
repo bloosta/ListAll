@@ -3,3 +3,5 @@ groq
 aiosqlite
 python-dotenv
 apscheduler
+uvicorn
+fastapi
