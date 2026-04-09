@@ -75,6 +75,36 @@ async def broadcast(request: Request, auth=Depends(check_auth)):
 
     return {"sent": ok, "failed": fail}
 
+# ─── Разослать напоминания о висящих задачах ──────────────
+@app.post("/nudge_all")
+async def nudge_all(auth=Depends(check_auth)):
+    token = os.getenv("BOT_TOKEN")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT t.id, t.title, u.telegram_id, u.tone_preset, u.tone_custom
+            FROM tasks t
+            JOIN users u ON t.user_id = u.id
+            WHERE t.is_done = 0 AND t.parent_id IS NULL AND u.nudge_enabled = 1
+        """)
+        rows = await cursor.fetchall()
+
+    ok, fail = 0, 0
+    from ai import generate_nudge
+    async with httpx.AsyncClient() as client:
+        for task_id, title, telegram_id, tone_preset, tone_custom in rows:
+            try:
+                nudge = await generate_nudge(title, tone_preset, tone_custom)
+                await client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": telegram_id,
+                          "text": f"👀 Задача ждёт тебя:\n\n📌 {title}\n\n{nudge}"}
+                )
+                ok += 1
+            except Exception:
+                fail += 1
+
+    return {"nudged": ok, "failed": fail}
+
 # ─── Написать конкретному юзеру ───────────────────────────
 @app.post("/send/{telegram_id}")
 async def send_message(telegram_id: int, request: Request, auth=Depends(check_auth)):
