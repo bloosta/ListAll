@@ -1,9 +1,16 @@
 import aiosqlite
 import os
+from dotenv import load_dotenv
 
-DB_PATH = "/app/data/tasks.db"
+load_dotenv()
+
+DB_PATH = os.getenv("DB_PATH", "/app/data/tasks.db")
 
 async def init_db():
+    # Каталог для БД может отсутствовать (свежий том/локальный запуск)
+    parent = os.path.dirname(DB_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (

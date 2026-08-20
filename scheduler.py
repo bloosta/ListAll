@@ -1,12 +1,21 @@
 import asyncio
+import logging
 import threading
 from datetime import datetime, timezone, timedelta
 from db import DB_PATH, get_stale_tasks_for_nudge, mark_nudge_sent
 import aiosqlite
 
+_scheduler_thread = None
+
 def start_scheduler(bot):
-    thread = threading.Thread(target=_run_loop, args=(bot,), daemon=True)
-    thread.start()
+    # post_init вызывается заново при каждом перезапуске бота — без этой
+    # проверки после N падений накапливается N потоков и напоминания дублируются
+    global _scheduler_thread
+    if _scheduler_thread is not None and _scheduler_thread.is_alive():
+        logging.info("Планировщик уже запущен, второй поток не создаём")
+        return
+    _scheduler_thread = threading.Thread(target=_run_loop, args=(bot,), daemon=True)
+    _scheduler_thread.start()
 
 def _run_loop(bot):
     loop = asyncio.new_event_loop()
@@ -22,7 +31,7 @@ async def _scheduler_loop(bot):
                 await check_nudges(bot)
             tick += 1
         except Exception as e:
-            print(f"Ошибка планировщика: {e}")
+            logging.exception("Ошибка планировщика: %s", e)
         await asyncio.sleep(60)
 
 async def check_reminders(bot):
@@ -47,8 +56,9 @@ async def check_reminders(bot):
                     text=f"⏰ Напоминание!\n\n📌 {title}\n\n{encouragement}"
                 )
                 await db.execute("UPDATE reminders SET is_sent = 1 WHERE id = ?", (reminder_id,))
+                await db.commit()
             except Exception as e:
-                print(f"Ошибка отправки напоминания {reminder_id}: {e}")
+                logging.exception("Ошибка отправки напоминания %s: %s", reminder_id, e)
 
         await db.commit()
 
@@ -69,4 +79,4 @@ async def check_nudges(bot):
             )
             await mark_nudge_sent(task_id, now_utc.isoformat())
         except Exception as e:
-            print(f"Ошибка nudge для задачи {task_id}: {e}")
+            logging.exception("Ошибка nudge для задачи %s: %s", task_id, e)

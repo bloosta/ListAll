@@ -6,8 +6,11 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse
 import httpx
+from dotenv import load_dotenv
 
-DB_PATH = "/app/data/tasks.db"
+load_dotenv()
+
+DB_PATH = os.getenv("DB_PATH", "/app/data/tasks.db")
 app = FastAPI()
 security = HTTPBasic()
 
@@ -154,11 +157,17 @@ async def dashboard(auth=Depends(check_auth)):
     </body></html>
     """
 
+_admin_thread = None
+
 def start_admin():
-    thread = threading.Thread(
+    # Тот же случай: повторный запуск занял бы уже занятый порт 8080
+    global _admin_thread
+    if _admin_thread is not None and _admin_thread.is_alive():
+        return
+    _admin_thread = threading.Thread(
         target=uvicorn.run,
         args=(app,),
-        kwargs={"host": "0.0.0.0", "port": 8080},
+        kwargs={"host": "0.0.0.0", "port": int(os.getenv("ADMIN_PORT", "8080"))},
         daemon=True
     )
-    thread.start()
+    _admin_thread.start()

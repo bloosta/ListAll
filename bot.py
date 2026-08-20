@@ -14,7 +14,7 @@ from db import (init_db, upsert_user, add_task, get_tasks, get_done_tasks,
                 mark_subtask_done, mark_task_split, clear_subtasks, update_task,
                 delete_task, add_reminder, get_active_reminder, set_tone, get_tone,
                 get_nudge_enabled, set_nudge_enabled)
-from ai import split_task, generate_encouragement
+from ai import split_task, generate_encouragement, AIUnavailable
 from admin import start_admin
 
 load_dotenv()
@@ -254,14 +254,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_id = int(data.split("_")[1])
         task = await get_task_by_id(task_id, tid)
         if not task:
-            await query.answer("Задача не найдена", show_alert=True)
+            await query.edit_message_text("Задача не найдена — возможно, она уже удалена.")
             return
         await mark_done(task_id, tid)
         tone = await get_tone(tid)
         preset = tone[0] if tone else "motivational"
         custom = tone[1] if tone else None
+        # generate_encouragement сам подставит запасной текст, если ИИ недоступен,
+        # чтобы отметка "выполнено" не пропадала вместе с ошибкой
         encouragement = await generate_encouragement(task[1], preset, custom)
-        await query.edit_message_text(f"✅ Выполнено: {task[1]}\n\n{encouragement}")
+        try:
+            await query.edit_message_text(f"✅ Выполнено: {task[1]}\n\n{encouragement}")
+        except Exception as e:
+            logging.warning("Не удалось обновить сообщение задачи %s: %s", task_id, e)
 
     # Выполнено (подзадача)
     elif data.startswith("subdone_"):
@@ -286,12 +291,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"🤖 Думаю над задачей «{task[1]}»...")
         except Exception:
             pass
-        if task[4]:
-            await clear_subtasks(task_id, tid)
         context_text = task[1]
         if task[2]:
             context_text += f". Контекст: {task[2]}"
-        subtasks = await split_task(context_text)
+        try:
+            subtasks = await split_task(context_text)
+        except AIUnavailable as e:
+            # Старые подзадачи ещё на месте — возвращаем задачу в прежнем виде
+            logging.error("Разбиение задачи %s не удалось: %s", task_id, e)
+            text, keyboard = await build_task_message(task_id)
+            await query.edit_message_text(
+                text + "\n\n⚠️ ИИ сейчас недоступен, разбить не получилось. "
+                "Попробуй позже или добавь подзадачу вручную через «Редактировать».",
+                reply_markup=keyboard
+            )
+            return
+        # Предыдущий разбор чистим только когда новый уже получен
+        if task[4]:
+            await clear_subtasks(task_id, tid)
         for sub in subtasks:
             await add_task(tid, sub, parent_id=task_id)
         await mark_task_split(task_id, tid)
@@ -303,7 +320,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_id = int(data.split("_")[1])
         task = await get_task_by_id(task_id, tid)
         if not task:
-            await query.answer("Нет доступа", show_alert=True)
+            await query.edit_message_text("Задача не найдена — возможно, она уже удалена.")
             return
         context.user_data["edit_task_id"] = task_id
         keyboard = InlineKeyboardMarkup([
@@ -559,11 +576,11 @@ if __name__ == "__main__":
 
 
     while True:
+        # Каждой попытке — свой цикл событий, старый обязательно закрываем:
+        # иначе после первого падения PTB получает уже закрытый loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            import asyncio
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             print("Бот запущен!")
             build_app().run_polling(
                 drop_pending_updates=True,
@@ -576,5 +593,10 @@ if __name__ == "__main__":
                 logging.warning(f"Сетевая ошибка, перезапуск через 3 сек: {e}")
                 time.sleep(3)
             else:
-                logging.error(f"Бот упал: {e}. Перезапуск через 5 секунд...")
+                logging.exception(f"Бот упал: {e}. Перезапуск через 5 секунд...")
                 time.sleep(5)
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
